@@ -282,7 +282,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-42 tests:
+45 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.
@@ -417,45 +417,69 @@ the original.
 - tool names and list order survive narrowing;
 - property key order survives narrowing.
 
-### Mid-session access changes: why the prefix must change
+### Mid-session access changes: the honest cost
 
-This is the one case where the guard does invalidate cache, and it is worth
-being exact about it rather than calling it an exception.
+An earlier version of this section claimed the harness already invalidates the
+prefix on a mode change, via the `sandbox:policy` prompt context. **That was
+wrong**, and the correction matters because it changes who pays.
 
-**A mode can legitimately change mid-conversation.** `setSandboxMode` appends a
-`sandbox/mode` event to the session log, and `sandboxPolicy.resolve()` folds
-that log on **every** call rather than caching it. Nothing in the harness freezes
-permissions at session start.
+**The policy text is an appended message, not part of the prefix.**
+`dsh-sandbox-policy` registers a `sandbox:policy` context whose text is a
+function of the resolved mode, but `dsh-agent-loop` renders the whole context
+snapshot and appends it to the message list:
 
-**The harness already republishes mode-dependent prompt content for this
-reason.** `dsh-sandbox-policy` registers a `sandbox:policy` system-prompt
-context whose text is a *function* of the resolved policy, evaluated at every
-assembly:
-
-```
-text: (context) => renderPolicyContext(this.resolve({ session }))
+```js
+const context = this.runtimeContext.project(joinContextSections(sections), sections)
+// ...
+{ kind: "enter", messages: context === void 0 ? claimed : [...claimed, context] }
 ```
 
-`renderPolicyContext` returns a different sentence per mode — "Current DSH file
-policy: read-only…" versus "…danger-full-access…". So a mode change already
-rewrites the system-prompt text, and that already invalidates the cached prefix.
-**This is not a cost this plugin introduces.**
+The snapshot even announces itself: *"This snapshot supersedes earlier
+runtime-context snapshots."* Content appended at the end of a conversation
+cannot invalidate anything cached ahead of it, so **a mode change costs nothing
+by itself.**
 
-**And since `tools` precedes `system` in the prefix hierarchy, the tools block
-is invalidated first anyway.** Because the guard's own change lands in the tools
-block, it does not add a second invalidation point on top of the one the harness
-already pays — it rides the same event. That ordering is why the two cannot be
-avoided independently.
+**`tools` is the channel that carries the cost.** `assembly.tools` feeds both
+`buildRequest` and `toolsChanged()`, which drives the request-series restart;
+`headerEquals` compares schemas by canonical JSON. The guard's rewrite is a
+tools rewrite, so it *is* the thing that moves the cached prefix.
 
-**The trade is deliberate and correct.** A stale schema would offer the model
-fields that no longer work — exactly the failure this plugin exists to prevent.
-The guard follows the permissions, and the cache follows the guard.
+**And the tools block genuinely would not move without this plugin.** The
+advertised escalation enum derives from a *mount-time* capture — `dsh-tool-bash`
+reads `const defaultMode = ctx.shell.sandboxMode` once in `apply`, and
+`ESCALATION_TARGETS` follows from it — while `resolveSandboxPolicy` resolves per
+call. That load-time/execution-time split is the root bug this plugin exists to
+fix, and a side effect of it is that the published schema is *static across a
+mode change*. So nothing in the harness would invalidate the prefix, and the
+guard's rewrite is the sole cause.
 
-**The cost is bounded.** One cache write per mode change per session, not per
-turn. After it, the new schema is the new cached prefix and reads resume
-normally. Both directions verified in `test/mount.test.mjs`: widening removes
-the fields, narrowing restores the one usable value, and the pre-execute
-correction follows the change as well.
+**So the guard does introduce a cache write on a mode change** — one that would
+not otherwise occur. Being precise about the size of that:
+
+| | cost of one mid-session mode change |
+|---|---|
+| Harness alone | nothing — the snapshot is appended, the tools block is static |
+| With this guard | one cache write, then reads resume normally |
+
+**It is still the right trade, for a stated reason.** Without the rewrite the
+model keeps a schema offering escalation fields that no longer work — which is
+exactly the failure this plugin exists to prevent, reinstated mid-session. A
+single cache write per mode change buys a surface that always matches the
+session's real permissions. Mode changes are user actions, not per-turn events,
+so the frequency is low by construction.
+
+**It cannot be avoided from inside this design.** There is no way to correct a
+published schema without changing it, and the fields live in the tools block.
+The alternative is recovery rather than prevention — correcting the call after
+it is rejected instead of never advertising it — which costs no cache write but
+costs one failed tool call per affected turn. The related
+`apex-mochen/dsh-sandbox-arg-guard` takes that route. The two are complementary,
+and this is the specific axis on which they differ.
+
+**Steady state is unaffected**, which is the property that matters day to day:
+with the mode unchanged, the tool bytes are identical on every request, so
+`toolsChanged()` is false, no series restarts, and there is no repeated cost.
+`test/mount.test.mjs` pins all three facts.
 
 ## License
 

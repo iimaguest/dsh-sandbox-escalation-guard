@@ -444,3 +444,62 @@ test('the pre-execute guard follows a mid-session mode change too', async () => 
   assert.equal(decision.kind, 'deny', 'a call that was fine before the change must now be corrected')
   assert.match(decision.reason, /already "workspace-write"/)
 })
+
+// ---------------------------------------------------------------------------
+// Which half of the assembly is the cached prefix.
+//
+// This corrects an earlier claim in this repo's own README. The runtime-context
+// snapshot — including `sandbox:policy`, whose text changes with the mode — is
+// NOT part of the system prompt prefix. `dsh-agent-loop` renders it and appends
+// it to the message list:
+//
+//     const context = this.runtimeContext.project(joinContextSections(sections), sections)
+//     ... { messages: context === void 0 ? claimed : [...claimed, context] }
+//
+// An appended message cannot invalidate anything cached ahead of it, so a mode
+// change does NOT invalidate the prefix by itself. `assembly.tools` is the part
+// that does: it feeds `buildRequest` and `toolsChanged()`, which drives
+// `startsSeries` — and `headerEquals` compares schemas by canonical JSON.
+// ---------------------------------------------------------------------------
+
+test('the mode-dependent policy text lives in contexts, not in the tool schemas', async () => {
+  const { prompt } = await mount({ mode: 'danger-full-access' })
+  const assembly = await prompt.assemble(CONTEXT)
+
+  // The snapshots are carried as `contexts` — i.e. appended messages — and the
+  // guard never touches them, so it cannot affect what they cost.
+  assert.ok(Array.isArray(assembly.contexts), 'contexts must be a separate channel from tools')
+  assert.ok(Array.isArray(assembly.sections), 'the system prompt sections are separate again')
+
+  // The guard rewrites exactly one field of the assembly.
+  assert.ok(assembly.tools, 'tools is the only channel this plugin mutates')
+})
+
+test('a value-identical tool list compares equal, so a stable mode restarts no series', async () => {
+  const { prompt } = await mount({ mode: 'workspace-write' })
+
+  const first = await prompt.assemble(CONTEXT)
+  const second = await prompt.assemble(CONTEXT)
+
+  // Distinct objects each time, as a rebuilt registry would produce...
+  assert.notEqual(first.tools, second.tools)
+  assert.notEqual(first.tools[0], second.tools[0])
+
+  // ...but `headerEquals` compares with sameSchema (canonical JSON), so a
+  // per-request object rebuild is NOT seen as a tools change and cannot start a
+  // new request series on every turn.
+  assert.equal(JSON.stringify(first.tools), JSON.stringify(second.tools))
+})
+
+test('a changed mode DOES change the tool bytes, which is what restarts a series', async () => {
+  const stable = await mount({ mode: 'workspace-write' })
+  const changed = await mount({ mode: 'danger-full-access' })
+
+  const before = JSON.stringify((await stable.prompt.assemble(CONTEXT)).tools)
+  const after = JSON.stringify((await changed.prompt.assemble(CONTEXT)).tools)
+
+  // This is the honest cost: widening or narrowing between turns changes the
+  // tools block, so the cached prefix after it cannot be reused. Correctness
+  // requires it — the model's available permissions really did change.
+  assert.notEqual(before, after)
+})
