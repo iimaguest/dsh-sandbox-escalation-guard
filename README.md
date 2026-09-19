@@ -256,7 +256,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-28 tests:
+31 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.
@@ -268,6 +268,25 @@ npm test
   confined session still receives the field it can use, that unmounting restores
   the original surface exactly (so this is an ordinary plugin row with no
   residue), and that the pre-execute correction fires only on unusable requests.
+  Three of these mount the plugin **before** the policy service exists and then
+  provide it, which is the real boot order — see the note below.
+
+### The service-ordering trap
+
+`ctx.get('sandboxPolicy')` must not be read once inside `apply` and closed over.
+A bundle patch is appended to the composition, while `sandbox-policy` sits
+earlier in the base tree and is provided asynchronously, so the row can load
+before the service exists. Closing over the result binds `undefined` and the
+plugin then narrows nothing for the entire session — silently, having printed a
+warning that looks like a missing dependency rather than a race.
+
+Declaring `sandboxPolicy` in `inject` is the other wrong answer: it defers
+`apply` until the service appears, so on a composition that genuinely lacks it
+the plugin waits out the session with no hooks registered and no diagnostic at
+all. The guard resolves the service per request instead, mounts unconditionally,
+and reports a genuinely absent service once, at the first request it cannot
+serve. `mount.test.mjs` pins both halves: untouched before the service arrives,
+narrowing immediately after.
 
 The escalation-prose fixtures in `guard.test.mjs` are copied verbatim from the
 shipped `dsh-tool-bash` and `dsh-tool-fs` descriptions. If a DSH upgrade reworks

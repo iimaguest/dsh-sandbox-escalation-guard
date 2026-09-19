@@ -154,3 +154,86 @@ test('a call with no escalation arguments is delegated untouched', async () => {
   const decision = await ctx.waterfall('tools/pre-execute', exec, () => Promise.resolve({ kind: 'allow' }))
   assert.equal(decision.kind, 'allow')
 })
+
+/**
+ * The regression that reached a live deployment.
+ *
+ * A bundle patch is appended to the composition, while `sandbox-policy` sits
+ * earlier in the base tree and is provided asynchronously. Reading
+ * `ctx.get('sandboxPolicy')` once inside `apply` therefore closes over
+ * `undefined`: the row loaded, announced itself with a warning, and then
+ * narrowed nothing for the whole session.
+ *
+ * These tests mount the real service AFTER the plugin, and assert that the
+ * guard starts working once it arrives.
+ */
+async function mountWithDeferredPolicy({ mode }) {
+  const ctx = new Context()
+  const prompt = new SystemPrompt(ctx, {})
+  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+
+  // Mount the plugin first, with no policy in existence yet.
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false }) })
+  const beforeService = await prompt.assemble(CONTEXT)
+
+  // Now the policy service arrives, as it does on a real boot.
+  ctx.provide('sandboxPolicy')
+  ctx.set('sandboxPolicy', { resolve: () => ({ mode }) })
+
+  return { ctx, prompt, beforeService }
+}
+
+test('narrowing begins as soon as the policy service arrives after mount', async () => {
+  const { prompt, beforeService } = await mountWithDeferredPolicy({ mode: 'danger-full-access' })
+
+  // Before the service existed there was nothing to resolve a mode from, so the
+  // surface is left untouched rather than guessed at.
+  assert.deepEqual(
+    Object.keys(beforeService.tools[0].parameters.properties),
+    ['command', 'sandbox_permissions', 'justification'],
+    'with no policy available the schema must be left alone, not narrowed against a guess',
+  )
+
+  const afterService = await prompt.assemble(CONTEXT)
+  assert.deepEqual(
+    Object.keys(afterService.tools[0].parameters.properties),
+    ['command'],
+    'once sandboxPolicy exists the guard must narrow — this is the bug that shipped',
+  )
+  assert.equal(/escalate immediately/.test(afterService.tools[0].description), false)
+})
+
+test('the pre-execute guard also begins working after a deferred policy arrives', async () => {
+  const { ctx } = await mountWithDeferredPolicy({ mode: 'danger-full-access' })
+  const exec = {
+    name: 'bash',
+    agent: AGENT,
+    arguments: { command: 'pwd', sandbox_permissions: 'danger-full-access', justification: 'Why not.' },
+  }
+
+  const decision = await ctx.waterfall('tools/pre-execute', exec, () => Promise.resolve({ kind: 'allow' }))
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason, /already "danger-full-access"/)
+})
+
+test('an absent policy is reported once, not on every request', async () => {
+  const warnings = []
+  const original = console.warn
+  console.warn = (...args) => warnings.push(args.join(' '))
+  try {
+    const ctx = new Context()
+    const prompt = new SystemPrompt(ctx, {})
+    prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+    await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: true }) })
+
+    await prompt.assemble(CONTEXT)
+    await prompt.assemble(CONTEXT)
+    await prompt.assemble(CONTEXT)
+  } finally {
+    console.warn = original
+  }
+
+  const mine = warnings.filter((w) => w.includes('sandbox-escalation-guard'))
+  assert.equal(mine.length, 1, 'a missing service must be reported without flooding the console per request')
+  assert.match(mine[0], /sandboxPolicy is unavailable/)
+})
