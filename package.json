@@ -1,7 +1,7 @@
 {
   "name": "dsh-sandbox-escalation-guard",
   "version": "1.0.0",
-  "description": "Stops the DSH sandbox-escalation fields being advertised to a model when the calling session cannot grant them, fixing the retry loop known models fall into at danger-full-access.",
+  "description": "Stops the DSH sandbox-escalation fields being offered to a model when the calling session cannot grant them, fixing the GPT-family retry loop at danger-full-access where every advertised enum value is rejected before the command runs.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

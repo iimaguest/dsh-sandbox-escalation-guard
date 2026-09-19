@@ -1,11 +1,18 @@
 # dsh-sandbox-escalation-guard
 
-A permanent DeepSeek Harness plugin that stops the sandbox-escalation fields
-being advertised to a model when the calling session cannot grant them.
+A DeepSeek Harness plugin that stops the sandbox-escalation fields being offered
+to a model when the calling session cannot grant them.
 
-It fixes a retry loop that GPT-family models fall into and that no amount of
-prompting can break, because the model is being offered a field whose every
-legal value is rejected.
+**It fixes a GPT-specific failure.** GPT-family models complete every optional
+property in a tool's schema, and the two optional properties on `bash`, `write`
+and `edit` are exactly the two a full-access session can never use. So GPT fills
+them in on every call, every call is rejected before it runs, and the error text
+never says that the fix is to omit them. The turn dies with nothing executed.
+
+A model that sends only what a call needs never sees this — which is why it
+looks like "GPT is broken" while other models are fine in the same session. The
+fix is not a better prompt: it is to stop publishing fields that cannot be
+filled. See [why this presents as GPT-specific](#why-this-presents-as-gpt-is-broken).
 
 ---
 
@@ -48,19 +55,68 @@ Error: sandbox escalation to "workspace-write" is not strictly wider than this c
 Neither text names the only actual repair, which is to **omit both fields**. The
 observed result is the same command retried until the turn dies.
 
+### Why this presents as "GPT is broken"
+
+Nothing here is model-specific in the harness. The difference is a habit, and it
+collides with this defect perfectly:
+
+**GPT-family models populate every optional property in a tool's schema.** Given
+`command` (required) plus `sandbox_permissions` and `justification` (optional),
+they do not send the minimum the call needs — they send a fully-formed instance
+of the schema they were shown. Asked for one string, they fill in three.
+
+That habit is usually harmless. Here it is fatal, because the two optional
+properties are the exact two that a full-access session can never use. So the
+model helpfully completes them on **every** call, each call is rejected before
+anything runs, and the error text points at the justification field rather than
+at the real instruction, which is to leave the fields out. Retrying with the
+same habit produces the same rejection. The turn ends with no command executed
+and no usable signal about why.
+
+A model that only sends what the call needs never touches those fields and never
+sees the bug. From the outside, that looks like one model being broken — same
+session, same harness, same repository, different models, only one of them
+failing.
+
+The fix follows directly from the diagnosis: **if the model completes whatever
+it is shown, stop showing it things it cannot use.** Once both fields are gone
+from the schema, there is nothing left for the habit to complete, and the
+failure mode disappears for the model that was most prone to it — without the
+model needing to know it existed, and without a prompt telling it to be careful,
+which is the kind of instruction a schema-completing model is least likely to
+reliably follow.
+
+This is why the primary fix is suppression rather than a clearer error message.
+A better message asks the model to behave differently; removing the field does
+not depend on the model's cooperation at all. The `tools/pre-execute`
+correction exists only for the residual case — a cached schema, or a model that
+ignores the schema it was given.
+
 ### Evidence
 
-From a live session (`oauth-codex/gpt-6-astra`, effective mode
-`danger-full-access`, approval policy `never`), eight consecutive bash calls and
-eight identical failures:
+From one live session (effective mode `danger-full-access`, approval policy
+`never`), comparing a model that completes optional properties against one that
+does not:
 
 | model | tool calls | emitted `sandbox_permissions` | bash calls | bash + optional field |
 |---|---|---|---|---|
 | `zai/glm-5.3` | 211 | **0** | 86 | 48 |
 | `oauth-codex/gpt-6-astra` | 10 | **8** | 8 | **8** |
 
-Same session, same schema, same repo. The only variable is whether the model
-completes optional properties — which is why this reads as "GPT is broken".
+The GLM column is not "a model that tried and succeeded" — it emitted the field
+**zero** times in 211 calls. It never entered the failure mode, because it sends
+only the properties a call needs. The GPT column emitted it on **every** bash
+call and lost all eight to the same rejection.
+
+Same session, same schema, same repository, same effective mode. The only
+variable is whether the model completes the optional properties it was shown —
+which is why this reads from the outside as "GPT is broken" rather than as a
+schema defect that one model's habits expose.
+
+Confirmed at the wire level too: the `request/header` event for that session
+shows `bash`, `write` and `edit` each advertising `sandbox_permissions` with
+`enum: ["workspace-write","danger-full-access"]`, so the field was genuinely
+published to the model rather than being something it invented.
 
 ---
 

@@ -75,7 +75,7 @@ const svg = (h, body) =>
 
 // ---------------------------------------------------------------- screenshot 1
 function shotComparison() {
-  const H = 790
+  const H = 800
   let b = ''
 
   b += t(64, 72, 'What the model is handed', { size: 30, weight: 700, font: SANS })
@@ -119,7 +119,8 @@ function shotComparison() {
   b += t(240, 662, '211 calls, 0 escalation attempts', { size: 13, fill: C.green, font: SANS })
   b += t(64, 688, 'gpt-6-astra', { size: 13, fill: C.faint, font: SANS })
   b += t(240, 688, '8 of 8 bash calls attempted it, all 8 failed', { size: 13, fill: C.red, font: SANS })
-  b += t(64, 730, 'Same schema, same repository. The only variable is whether a model completes optional properties.', { size: 13, fill: C.faint, font: SANS })
+  b += t(64, 722, 'Same session, same schema, same repository.', { size: 13, fill: C.faint, font: SANS })
+  b += t(64, 746, 'The only variable is whether a model completes the optional properties it was shown \u2014 GPT does, so only GPT fails.', { size: 13, fill: C.faint, font: SANS })
 
   return svg(H, b)
 }
