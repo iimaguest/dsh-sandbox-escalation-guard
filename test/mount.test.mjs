@@ -31,7 +31,7 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 
-import { apply, name, inject } from '../lib/index.js'
+import { apply, name, inject, widerModesFor } from '../lib/index.js'
 
 const ESCALATION_PROSE =
   ' Attempting a command the sandbox may deny is safe and expected: run it and read the marker rather than assuming the denial. When a command is denied and a wider mode would let it succeed, escalate immediately in the same turn — the one sanctioned exception to a denial: retry the exact same command once with `sandbox_permissions` (the narrowest wider mode that suffices) plus a one-sentence `justification`.'
@@ -61,7 +61,7 @@ const CONTEXT = { scope: AGENT }
  * the wiring under test is the real one — the same code path a live
  * `ctx.sandboxPolicy` feeds in production.
  */
-async function mount({ mode }) {
+async function mount({ mode, escalation = false }) {
   const ctx = new Context()
   const prompt = new SystemPrompt(ctx, {})
   prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
@@ -69,7 +69,10 @@ async function mount({ mode }) {
     name,
     inject,
     apply(scope) {
-      apply(scope, { warn: false, resolveMode: () => mode })
+      // `resolveMode` drives the per-call pre-execute guard. `escalationPossible`
+      // drives the published surface and is a session fact: the true policy is
+      // `false` when the deployment can never approve an escalation.
+      apply(scope, { warn: false, resolveMode: () => mode, escalationPossible: escalation })
     },
   })
   // `ctx.plugin` materializes the row asynchronously, exactly as the loader
@@ -79,7 +82,7 @@ async function mount({ mode }) {
 }
 
 test('the plugin file applies and narrows against a live registry', async () => {
-  const { prompt } = await mount({ mode: 'danger-full-access' })
+  const { prompt } = await mount({ mode: 'danger-full-access', escalation: false })
   const assembly = await prompt.assemble(CONTEXT)
   const bash = assembly.tools.find((tool) => tool.name === 'bash')
 
@@ -90,13 +93,16 @@ test('the plugin file applies and narrows against a live registry', async () => 
   assert.match(bash.description, /Execute a bash command/)
 })
 
-test('a confined session still receives the escalation field it can use', async () => {
-  const { prompt } = await mount({ mode: 'workspace-write' })
+test('a session that can escalate keeps the field exactly as the harness built it', async () => {
+  const { prompt } = await mount({ mode: 'workspace-write', escalation: true })
   const assembly = await prompt.assemble(CONTEXT)
   const bash = assembly.tools.find((tool) => tool.name === 'bash')
 
-  assert.deepEqual(bash.parameters.properties.sandbox_permissions.enum, ['danger-full-access'])
-  assert.ok(bash.parameters.properties.justification)
+  // Not merely "still present" — byte-identical to the registry's own schema.
+  // The registry rebuilds objects per request, so identity is not the contract;
+  // canonical JSON is, and it is what `headerEquals` compares.
+  assert.equal(JSON.stringify(bash), JSON.stringify(SHELL_TOOLS[0]))
+  assert.deepEqual(bash.parameters.properties.sandbox_permissions.enum, ['workspace-write', 'danger-full-access'])
 })
 
 test('disposing the plugin restores the original surface', async () => {
@@ -167,13 +173,13 @@ test('a call with no escalation arguments is delegated untouched', async () => {
  * These tests mount the real service AFTER the plugin, and assert that the
  * guard starts working once it arrives.
  */
-async function mountWithDeferredPolicy({ mode }) {
+async function mountWithDeferredPolicy({ mode, escalation = false }) {
   const ctx = new Context()
   const prompt = new SystemPrompt(ctx, {})
   prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
 
   // Mount the plugin first, with no policy in existence yet.
-  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false }) })
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => mode, escalationPossible: escalation }) })
   const beforeService = await prompt.assemble(CONTEXT)
 
   // Now the policy service arrives, as it does on a real boot.
@@ -183,24 +189,23 @@ async function mountWithDeferredPolicy({ mode }) {
   return { ctx, prompt, beforeService }
 }
 
-test('narrowing begins as soon as the policy service arrives after mount', async () => {
+test('the surface is narrowed on the first assembly, without the sandbox policy', async () => {
   const { prompt, beforeService } = await mountWithDeferredPolicy({ mode: 'danger-full-access' })
 
-  // Before the service existed there was nothing to resolve a mode from, so the
-  // surface is left untouched rather than guessed at.
+  // The assemble decision no longer consults `sandboxPolicy` at all — it is a
+  // session fact about approval, so it works even before that service exists.
+  // (The earlier revision closed over `ctx.get('sandboxPolicy')` at mount, which
+  // bound `undefined` and narrowed nothing for a whole live session.)
   assert.deepEqual(
     Object.keys(beforeService.tools[0].parameters.properties),
-    ['command', 'sandbox_permissions', 'justification'],
-    'with no policy available the schema must be left alone, not narrowed against a guess',
-  )
-
-  const afterService = await prompt.assemble(CONTEXT)
-  assert.deepEqual(
-    Object.keys(afterService.tools[0].parameters.properties),
     ['command'],
-    'once sandboxPolicy exists the guard must narrow — this is the bug that shipped',
+    'the published surface must not depend on a service arriving later',
   )
-  assert.equal(/escalate immediately/.test(afterService.tools[0].description), false)
+  assert.equal(/escalate immediately/.test(beforeService.tools[0].description), false)
+
+  // And it stays identical once the service does arrive.
+  const afterService = await prompt.assemble(CONTEXT)
+  assert.equal(JSON.stringify(afterService.tools), JSON.stringify(beforeService.tools))
 })
 
 test('the pre-execute guard also begins working after a deferred policy arrives', async () => {
@@ -216,62 +221,6 @@ test('the pre-execute guard also begins working after a deferred policy arrives'
   assert.match(decision.reason, /already "danger-full-access"/)
 })
 
-test('an absent policy is reported once, not on every request', async () => {
-  const warnings = []
-  const original = console.warn
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    const ctx = new Context()
-    const prompt = new SystemPrompt(ctx, {})
-    prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
-    await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: true }) })
-
-    await prompt.assemble(CONTEXT)
-    await prompt.assemble(CONTEXT)
-    await prompt.assemble(CONTEXT)
-  } finally {
-    console.warn = original
-  }
-
-  const mine = warnings.filter((w) => w.includes('sandbox-escalation-guard'))
-  assert.equal(mine.length, 1, 'a missing service must be reported without flooding the console per request')
-  assert.match(mine[0], /sandboxPolicy is unavailable/)
-})
-
-// ---------------------------------------------------------------------------
-// Waterfall chaining.
-//
-// `system-prompt/assemble` is a chained thunk (`cbs.shift() ?? inner`), so a
-// listener that returns WITHOUT calling `next()` ends the chain for every
-// listener registered after it. The first version of this plugin did that, and
-// no single-listener test could see it — these tests mount a downstream
-// listener and assert it still runs.
-// ---------------------------------------------------------------------------
-
-test('a listener registered after the guard still runs', async () => {
-  const ctx = new Context()
-  const prompt = new SystemPrompt(ctx, {})
-  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
-
-  let downstreamRan = false
-  // Downstream, standing in for dsh-session-reference / dsh-agent.
-  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
-    downstreamRan = true
-    const result = await next()
-    return { ...result, downstreamMarker: true }
-  })
-
-  // The guard must be mounted FIRST so an un-chained return would cut this off.
-  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => 'danger-full-access' }) })
-
-  const assembly = await prompt.assemble(CONTEXT)
-
-  assert.equal(downstreamRan, true, 'the guard must not truncate the assemble waterfall')
-  assert.equal(assembly.downstreamMarker, true, "a downstream listener's contribution must survive")
-  // And the guard's own work must still happen, on the final assembly.
-  assert.deepEqual(Object.keys(assembly.tools[0].parameters.properties), ['command'])
-})
-
 test('every listener in the chain still contributes, whatever the order', async () => {
   const ctx = new Context()
   const prompt = new SystemPrompt(ctx, {})
@@ -284,7 +233,7 @@ test('every listener in the chain still contributes, whatever the order', async 
     const result = await next()
     return { ...result, beforeMarker: true }
   })
-  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => 'danger-full-access' }) })
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, escalationPossible: false }) })
   // Registered AFTER the guard, so a guard that returned early would cut it off.
   ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     order.push('after')
@@ -313,7 +262,7 @@ test('every listener in the chain still contributes, whatever the order', async 
 
 test('the assembled surface serializes identically on every request', async () => {
   for (const mode of ['danger-full-access', 'workspace-write', 'read-only']) {
-    const { prompt } = await mount({ mode })
+    const { prompt } = await mount({ mode, escalation: false })
 
     const serializations = new Set()
     for (let i = 0; i < 50; i++) {
@@ -331,7 +280,7 @@ test('the assembled surface serializes identically on every request', async () =
 })
 
 test('re-assembly preserves the input key order', async () => {
-  const { prompt } = await mount({ mode: 'workspace-write' })
+  const { prompt } = await mount({ mode: 'workspace-write', escalation: true })
   const assembly = await prompt.assemble(CONTEXT)
 
   // Both fields survive here, because a real escalation is available, and
@@ -356,6 +305,94 @@ test('re-assembly preserves the input key order', async () => {
  * deterministically — never per request, and never with a dependency on how
  * many requests came before.
  */
+
+test('narrowing never renames or reorders the tool list', async () => {
+  const { prompt } = await mount({ mode: 'danger-full-access' })
+  const assembly = await prompt.assemble(CONTEXT)
+
+  // Names and list order are part of the cached prefix on both providers.
+  assert.deepEqual(assembly.tools.map((tool) => tool.name), SHELL_TOOLS.map((tool) => tool.name))
+  assert.equal(assembly.tools.length, SHELL_TOOLS.length)
+})
+
+/**
+ * A mid-session access change must be picked up, not frozen.
+ *
+ * `sandboxPolicy.resolve()` reads the session's folded `sandbox/mode` state on
+ * every call, and setSandboxMode appends to that log, so a mode can change
+ * mid-conversation. The guard must follow it: re-reading per request is what
+ * makes this work, and it is the same reason the policy service itself is read
+ * lazily rather than captured at mount.
+ *
+ * Note the deliberate trade: the published schema changes, which changes the
+ * cached tools prefix. That is correct — the model's available permissions
+ * genuinely changed, and a stale schema would offer it fields that no longer
+ * work.
+ */
+test('the published surface does NOT move when the access level changes', async () => {
+  const ctx = new Context()
+  const prompt = new SystemPrompt(ctx, {})
+  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+
+  let mode = 'read-only'
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => mode, escalationPossible: false }) })
+
+  const at = async () => JSON.stringify((await prompt.assemble(CONTEXT)).tools)
+
+  const readOnly = await at()
+  mode = 'danger-full-access'
+  const fullAccess = await at()
+  mode = 'workspace-write'
+  const workspaceWrite = await at()
+
+  // The whole point of the redesign: the tools block is the front of the cached
+  // prefix, so a mode switch must not rewrite it. A change here would discard
+  // the entire cached conversation behind it.
+  assert.equal(fullAccess, readOnly, 'widening must not move the published surface')
+  assert.equal(workspaceWrite, readOnly, 'narrowing must not move the published surface')
+  assert.deepEqual(Object.keys(JSON.parse(readOnly)[0].parameters.properties), ['command'])
+})
+
+test('a mode change mid-session leaves the tool bytes untouched in every mode', async () => {
+  const renders = {}
+  for (const mode of ['read-only', 'workspace-write', 'danger-full-access']) {
+    const { prompt } = await mount({ mode, escalation: false })
+    renders[mode] = JSON.stringify((await prompt.assemble(CONTEXT)).tools)
+  }
+
+  const [a, b, c] = Object.values(renders)
+  assert.equal(a, b)
+  assert.equal(b, c)
+
+  // And with escalation genuinely possible, the surface is the registry's own
+  // bytes in every mode — again identical across a switch.
+  const open = {}
+  for (const mode of ['read-only', 'workspace-write', 'danger-full-access']) {
+    const { prompt } = await mount({ mode, escalation: true })
+    open[mode] = JSON.stringify((await prompt.assemble(CONTEXT)).tools)
+  }
+  assert.equal(open['read-only'], open['workspace-write'])
+  assert.equal(open['workspace-write'], open['danger-full-access'])
+})
+
+/**
+ * Why the enum is no longer trimmed to the values grantable from the current
+ * mode. Omitting a field is always safe; publishing a value that is later
+ * rejected is what breaks a model. A session can be switched between modes, so
+ * the set that is safe in every reachable mode is an intersection — and it is
+ * empty as soon as the range includes `danger-full-access`.
+ */
+test('publishing a mode-dependent enum was itself unsafe', () => {
+  const modes = ['read-only', 'workspace-write', 'danger-full-access']
+  const safeEverywhere = modes.filter((value) => modes.every((from) => widerModesFor(from).includes(value)))
+
+  // `workspace-write` used to advertise ["danger-full-access"]. Switch the
+  // session to danger-full-access and that exact value becomes the rejected one.
+  assert.equal(widerModesFor('workspace-write').includes('danger-full-access'), true)
+  assert.equal(widerModesFor('danger-full-access').includes('danger-full-access'), false)
+  assert.deepEqual(safeEverywhere, [], 'no value survives every reachable mode, so a constant surface can offer none')
+})
+
 test('the surface is identical regardless of request order', async () => {
   const renders = {}
   const sequence = [
@@ -397,28 +434,6 @@ test('narrowing never renames or reorders the tool list', async () => {
  * genuinely changed, and a stale schema would offer it fields that no longer
  * work.
  */
-test('a mode change mid-session changes the published surface', async () => {
-  const ctx = new Context()
-  const prompt = new SystemPrompt(ctx, {})
-  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
-
-  let mode = 'read-only'
-  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => mode }) })
-
-  const at = async () => Object.keys((await prompt.assemble(CONTEXT)).tools[0].parameters.properties)
-
-  assert.deepEqual(await at(), ['command', 'sandbox_permissions', 'justification'])
-
-  mode = 'danger-full-access'
-  assert.deepEqual(await at(), ['command'], 'widening mid-session must remove the un-grantable fields')
-
-  mode = 'workspace-write'
-  assert.deepEqual(
-    await at(),
-    ['command', 'sandbox_permissions', 'justification'],
-    'narrowing mid-session must restore the field for the one real escalation left',
-  )
-})
 
 test('the pre-execute guard follows a mid-session mode change too', async () => {
   const ctx = new Context()
@@ -491,15 +506,3 @@ test('a value-identical tool list compares equal, so a stable mode restarts no s
   assert.equal(JSON.stringify(first.tools), JSON.stringify(second.tools))
 })
 
-test('a changed mode DOES change the tool bytes, which is what restarts a series', async () => {
-  const stable = await mount({ mode: 'workspace-write' })
-  const changed = await mount({ mode: 'danger-full-access' })
-
-  const before = JSON.stringify((await stable.prompt.assemble(CONTEXT)).tools)
-  const after = JSON.stringify((await changed.prompt.assemble(CONTEXT)).tools)
-
-  // This is the honest cost: widening or narrowing between turns changes the
-  // tools block, so the cached prefix after it cannot be reused. Correctness
-  // requires it — the model's available permissions really did change.
-  assert.notEqual(before, after)
-})

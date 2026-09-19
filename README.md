@@ -125,16 +125,36 @@ published to the model rather than being something it invented.
 ### 1. It stops publishing the impossible (the actual fix)
 
 The tool set is still mutable at `system-prompt/assemble`, which is a
-**sanctioned extension point** and runs per request, so the schema the model
-will actually receive is rewritten against the *calling session's* effective
-mode:
+**sanctioned extension point** and runs per request. The rewrite is decided by a
+**session fact** — whether an escalation could be approved at all — never by the
+current access level:
 
-- keep only the enum values **strictly wider** than the current mode,
-- when none remain, **remove both fields entirely**,
-- and remove the escalation paragraph from the tool description that would
-  otherwise keep urging the model to use fields that are no longer there.
+- when the session's approval policy is `never`, and for any unrecognised mode,
+  **remove both fields entirely** and strip the escalation paragraph from the
+  tool description that would otherwise keep urging the model to use them;
+- when an escalation genuinely could be approved, **leave the surface exactly as
+  the harness built it**.
 
-It judges grantability by the same strictly-wider ladder
+An earlier revision instead kept only the enum values strictly wider than the
+*current* mode. That is gone, for two independent reasons:
+
+- **It moved the cached prefix.** The tools block is the front of the cache, so
+  rewriting it on an access-level change discarded the entire cached
+  conversation behind it.
+- **The value it kept was going to be rejected anyway.** Keeping
+  `["danger-full-access"]` for a `workspace-write` session publishes a value that
+  becomes the rejected one the moment the session is switched to
+  `danger-full-access`. Since a field can always safely be *omitted*, and a
+  published-but-rejected value is what actually breaks a model, the safe set is
+  the intersection across every mode a session can reach — which is empty as soon
+  as that range includes `danger-full-access`.
+
+Because the deciding fact is the approval policy rather than the mode, the
+published surface is byte-identical on every request and across every
+access-level switch. That is the property that protects the cache, and
+`test/mount.test.mjs` pins it directly.
+
+It still judges grantability by the same strictly-wider ladder
 `@deepseek-ai/dsh-sandbox` exports and `approveEscalation` enforces, so the two
 cannot disagree about what is grantable. That ladder is mirrored in
 `lib/wider-modes.js` rather than imported, which is why this package has **no
@@ -142,8 +162,8 @@ runtime dependency** — it plugs into the host contract alone (`apply` +
 `inject`). A `test/wider-modes.test.mjs` drift guard compares the mirror against
 the harness's own export and fails if DSH ever changes the ladder.
 
-For a `danger-full-access` session the model now receives a bash tool with only
-`command` and `description`, and no escalation prose at all.
+For a session under a `never` policy the model now receives a bash tool with only
+`command` and `description`, and no escalation prose at all — in every mode.
 
 ### 2. It corrects a call that carries them anyway
 
@@ -152,8 +172,9 @@ send an unusable request. `tools/pre-execute` then denies it with text that
 names the effective mode, states that no value is grantable, and names the
 repair — instead of the two opaque validations.
 
-This is a fallback, not the mechanism. Once (1) is active a conforming model
-never triggers it.
+This is a fallback where (1) applies, and the *only* mechanism where it does not.
+In a session under an `ask` policy the surface is deliberately left intact, so
+this listener is what keeps an unusable call from failing opaquely.
 
 ### The plugin never widens anything
 
@@ -165,44 +186,40 @@ advertised surface and adds none.
 
 ## Suppression matrix
 
-| effective session mode | advertised enum | description prose |
+The headline guard is **uniform across modes** — that is what keeps the cached
+tools prefix byte-stable for the length of a session.
+
+| session can have escalation approved? | advertised enum | description prose |
 |---|---|---|
-| `danger-full-access` | *(fields removed)* | escalation paragraph removed |
-| `workspace-write` | `["danger-full-access"]` | kept — a real escalation exists |
-| `read-only` | `["workspace-write", "danger-full-access"]` | kept |
-| unrecognised | *(fields removed)* | removed — fails closed |
+| no — approval policy `never`, no approval service, or unrecognised mode | *(fields removed)* | escalation paragraph removed |
+| yes — an approval channel exists and policy is not `never` | *(left exactly as the harness built it)* | kept |
+
+The two conditions are **session facts**, not properties of the current access
+level. `ApprovalService.decide` returns `"rejected"` outright when the effective
+policy is `never`, before any approver is consulted, so under that policy an
+escalation is impossible in *every* mode — and the right published surface is
+also the same in every mode.
 
 An unrecognised mode grants nothing rather than everything: `SandboxMode` is a
 validated closed union, so this cannot arise from a healthy host, and offering an
 escalation would be the unsafe guess.
 
-### Staying put, and narrowing, are the same case
+### The residual, and the per-call correction
 
-There is no separate handling for a model trying to *reduce* its own permissions,
-because the predicate never had a direction. `approveEscalation` accepts a value
-only when it is strictly wider than the one in effect, so **every** non-wider
-value is unusable — the mode already in force, and every mode below it alike.
-Neither is published:
+When escalation genuinely *can* be approved, the guard does not edit the surface
+at all. A call that still carries an unusable request is then corrected at
+`tools/pre-execute`, which re-evaluates per call and costs nothing to re-run.
+This covers:
 
-| effective mode | `read-only` requested | `workspace-write` requested | `danger-full-access` requested |
-|---|---|---|---|
-| `read-only` | offered | offered | offered |
-| `workspace-write` | **not offered**, denied | not offered | offered |
-| `danger-full-access` | **not offered**, denied | **not offered**, denied | not offered, denied |
+- a session under `ask` whose current mode happens to leave nothing wider — for
+  example `danger-full-access`, from which no escalation is ever grantable;
+- a client holding a cached schema;
+- a model that ignores its schema entirely.
 
-At `workspace-write` the enum is reduced to `["danger-full-access"]`, so
-`read-only` is simply absent from the schema. At `danger-full-access` there is no
-enum at all. A call that carries a reduction anyway — a cached schema, or a model
-ignoring its schema — is denied at `tools/pre-execute` with the same correction
-text, which names the effective mode as already the widest and states that no
-value is grantable, so the repair is to omit both fields.
-
-Narrowing is not something this field could ever express in the first place: a
-session's mode is set by policy, not requested downward. The guard does not
-invent a mechanism for it — it stops the field from being offered as though it
-were one.
-
----
+The correction names the effective mode, states that no value is grantable, and
+names the repair — unlike the two opaque validations it replaces. See
+[What this plugin does and does not cover](#what-this-plugin-does-and-does-not-cover)
+for why the enum is not trimmed per mode.
 
 ## Install
 
@@ -241,14 +258,70 @@ GitHub, `dsh plugin --profile web add /path/to/dsh-sandbox-escalation-guard`.
 - id: dsh-sandbox-escalation-guard
   name: dsh-sandbox-escalation-guard
   config:
-    warn: true          # log each intervention to the host console
-    resolveMode: ...    # testing seam only; omit in production
+    warn: true             # log each intervention to the host console
+    resolveMode: ...       # testing seam only; omit in production
+    escalationPossible: ... # testing seam only; omit in production
 ```
 
 | field | default | meaning |
 |---|---|---|
 | `warn` | `true` | Log when the schema is narrowed or a call is corrected. |
-| `resolveMode` | *(unset)* | Overrides effective-mode resolution. Exists so the wiring can be tested without a live `sandboxPolicy`; production omits it and reads the session's own `sandbox/mode` fold. |
+| `resolveMode` | *(unset)* | Overrides effective-mode resolution for the per-call correction. Testing seam; production reads the session's own `sandbox/mode` fold through `sandboxPolicy`. |
+| `escalationPossible` | *(unset)* | Overrides whether the published surface keeps the escalation fields. Testing seam; production reads the approval policy. |
+
+## What this plugin does and does not cover
+
+This is stated plainly because the coverage changed during development, and the
+honest version is narrower than an earlier claim in this file.
+
+**It covers the case where escalation can never be approved.** When the
+deployment's approval service exists and the session's policy is `never`,
+`ApprovalService.decide` returns `"rejected"` before any approver is consulted,
+so an escalation is impossible **in every mode**. The guard then removes the
+escalation fields from the published surface, uniformly, in every mode. This is
+the reported configuration (the failing session logged
+`approval/policy: {policy: never}`), and it is fixed.
+
+**It also corrects, per call, any unusable request that arrives anyway** — a
+cached schema, a model ignoring its schema, or a session whose policy is `ask`.
+That check runs at `tools/pre-execute`, costs nothing to re-evaluate, and names
+the exact repair.
+
+**It does NOT narrow the advertised enum to the values grantable from the
+current mode.** An earlier revision did, and that was wrong twice over:
+
+1. **It broke the cache.** The enum moved whenever the access level changed, and
+   the tools block is the front of the cached prefix, so a mode switch discarded
+   the entire cached conversation behind it.
+2. **It published a value that was going to be rejected anyway.** A
+   `workspace-write` session advertised `["danger-full-access"]`. Omitting a
+   field is always safe; publishing a value that is later rejected is what breaks
+   a model. The set that is safe in *every* mode a session can be switched into
+   is the intersection across those modes — and it is **empty** as soon as the
+   range includes `danger-full-access`:
+
+   | mode | grantable from it |
+   |---|---|
+   | `read-only` | `workspace-write`, `danger-full-access` |
+   | `workspace-write` | `danger-full-access` |
+   | `danger-full-access` | *(none)* |
+
+   No value is grantable from all three, so a surface that never offers a
+   rejected value cannot offer any value.
+
+**The consequence, stated without hedging:** in a session whose approval policy
+is `ask`, the guard leaves the tool surface exactly as the harness built it. It
+suppresses nothing there, and a GPT-family model at `danger-full-access` under
+`ask` can still fill the fields and get one rejected call — corrected by the
+pre-execute listener rather than prevented. That residual is the deliberate
+price of never invalidating a prefix. It is also the exact case where the
+harness's own validation is reachable, so the failure is a correction with a
+named repair rather than the opaque loop that motivated this plugin.
+
+A deployment that genuinely cannot change a session's access level can opt into
+the tighter surface with `escalationPossible: false`, which suppresses
+uniformly. That is a statement about the deployment, made by the deployment —
+not a guess this plugin makes from a mode it cannot know is stable.
 
 ## Screenshots
 

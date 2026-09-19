@@ -129,14 +129,14 @@ function shotComparison() {
 function shotMatrix() {
   const H = 700
   let b = ''
-  b += t(64, 72, 'Grantability, by session mode', { size: 30, weight: 700, font: SANS })
-  b += t(64, 104, 'The ladder is the one approveEscalation enforces; a drift-guard test fails if it ever changes.', { size: 15, fill: C.dim, font: SANS })
+  b += t(64, 72, 'Uniform across modes, so the cache never moves', { size: 30, weight: 700, font: SANS })
+  b += t(64, 104, 'Keyed on whether an escalation could be approved at all \u2014 a session fact, never the current access level.', { size: 15, fill: C.dim, font: SANS })
 
   const rows = [
-    ['danger-full-access', 'fields removed', 'prose removed', C.red],
-    ['workspace-write', '["danger-full-access"]', 'prose kept', C.amber],
-    ['read-only', '["workspace-write", "danger-full-access"]', 'prose kept', C.green],
+    ['policy never', 'fields removed', 'prose removed', C.red],
+    ['no approval service', 'fields removed', 'prose removed', C.red],
     ['unrecognised mode', 'fields removed', 'prose removed', C.red],
+    ['policy ask', 'left untouched', 'prose kept', C.amber],
   ]
 
   const x = 64
@@ -144,7 +144,7 @@ function shotMatrix() {
   const w = W - 128
   const rh = 62
 
-  b += t(x + 24, y - 14, 'EFFECTIVE SESSION MODE', { size: 12, fill: C.faint, weight: 700, font: SANS })
+  b += t(x + 24, y - 14, 'SESSION CAN ESCALATE?', { size: 12, fill: C.faint, weight: 700, font: SANS })
   b += t(x + 320, y - 14, 'ADVERTISED ENUM', { size: 12, fill: C.faint, weight: 700, font: SANS })
   b += t(x + 760, y - 14, 'ESCALATION PROSE', { size: 12, fill: C.faint, weight: 700, font: SANS })
 
@@ -231,12 +231,11 @@ function shotModes() {
   b += t(64, 104, 'Output of node tools/… against a real Cordis context and a real systemPrompt registry.', { size: 15, fill: C.dim, font: SANS })
 
   const y = 156
-  b += panel(64, y, W - 128, 344, 'Model-facing schema, per session mode', C.blue)
+  b += panel(64, y, W - 128, 344, 'Model-facing schema, per approval policy', C.blue)
 
   const rows = [
-    ['danger-full-access', ['properties = [command]', 'enum = ABSENT', 'escalation prose = STRIPPED'], C.green],
-    ['workspace-write', ['properties = [command, sandbox_permissions, justification]', 'enum = ["danger-full-access"]', 'escalation prose = PRESENT'], C.amber],
-    ['read-only', ['properties = [command, sandbox_permissions, justification]', 'enum = ["workspace-write", "danger-full-access"]', 'escalation prose = PRESENT'], C.green],
+    ['policy never', ['properties = [command]', 'enum = ABSENT', 'escalation prose = STRIPPED', 'in EVERY mode'], C.green],
+    ['policy ask', ['properties = [command, sandbox_permissions, justification]', 'enum = as the harness built it', 'surface = byte-identical every turn'], C.amber],
   ]
   rows.forEach((r, i) => {
     const yy = y + 74 + i * 86
