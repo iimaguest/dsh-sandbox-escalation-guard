@@ -282,7 +282,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-38 tests:
+40 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.
@@ -368,28 +368,64 @@ tools.
 
 ## On prompt caching
 
-The guard rewrites request content, which is exactly the shape of change that
-can quietly destroy a provider's KV cache, so the property is worth stating and
-testing rather than assuming.
+The guard rewrites request content, which is the exact shape of change that can
+quietly destroy a provider's prefix cache. So this is measured against what the
+providers actually document, not assumed.
+
+### What the providers say
+
+| Provider | Rule |
+|---|---|
+| [OpenAI](https://developers.openai.com/api/docs/guides/prompt-caching) | Changing `tools` changes "names, descriptions, schemas, **ordering**, or tool-specific instructions". Cache reuse "requires the entire rendered prefix to match". The cache-routing hash is taken over the initial tokens "**including tool definitions when present**". |
+| [Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-use-with-prompt-caching) | The hierarchy is `tools → system → messages`; "Modifying tool definitions" invalidates the **entire** cache at every level. |
+| [DeepSeek](https://api-docs.deepseek.com/guides/kv_cache/) | Caching is automatic and disk-based; a request hits only by **fully matching** a persisted cache prefix unit. |
+
+All three agree on the operative point: tool definitions sit at the front of the
+prefix, so they must be byte-stable for reuse to happen at all.
+
+### Why this plugin satisfies it
 
 **The bytes are constant for the length of a session.** The effective mode is a
-session fact, so `narrowTools` produces the same output on every assembly. The
-schema is narrowed once, in effect, and every later turn sends an identical
-tool block — the cached prefix is stable, and the provider cache is unaffected
-in steady state.
+session fact, so `narrowTools` yields identical output on every assembly. The
+schema is narrowed *once*, in effect, and every later turn sends the same bytes.
+The cache is written on the first request and read thereafter — unaffected in
+steady state.
 
-**Nothing varying is introduced.** No timestamp, counter, identifier, or
-regeneration enters the output; property insertion order is preserved from the
-input, so a rewrite never reorders keys and changes bytes without changing
-meaning. `test/mount.test.mjs` pins this: 50 consecutive assemblies per mode
-must yield exactly **one** distinct `JSON.stringify` of the tool surface, and
-the input key order must survive.
+**Nothing varying is introduced.** No timestamp, counter, identifier, token or
+regeneration enters the output, so the routing hash is stable too.
 
-The one honest exception is a genuine mid-session mode change — if the user
-switches the session's sandbox mode, the schema legitimately changes and the
-prefix after it must be recomputed. That is a real change in what the model is
-permitted to request, so it is correct for the cache to follow it; the guard
-does not, and should not, try to hide it.
+**Neither name nor order changes.** Only `properties` entries and the
+description text are filtered; the tool list keeps its order and every tool keeps
+its name. Property insertion order is preserved from the input, so a rewrite
+never reorders keys and changes bytes without changing meaning.
+
+**The result never depends on request history.** Rendering a given mode produces
+the same bytes whether it is the first request or the hundredth.
+
+**It makes the cached prefix smaller, not different.** The escalation fields are
+removed rather than rewritten, so the published definition is a strict subset of
+the original.
+
+### What is pinned by tests
+
+`test/mount.test.mjs` asserts the contract directly:
+
+- 50 consecutive assemblies per mode produce exactly **one** distinct
+  `JSON.stringify` of the tool surface;
+- the same mode renders identically no matter where it falls in a sequence of
+  differing modes;
+- tool names and list order survive narrowing;
+- property key order survives narrowing.
+
+### The one honest exception
+
+A genuine mid-session mode change — the user switching the session's sandbox
+mode — legitimately changes the schema, and the prefix from that point must be
+recomputed. That is a real change in what the model may request, so it is correct
+for the cache to follow it. The guard does not, and should not, try to hide it.
+Note also that the pre-execute correction (a denial) is a *message*, appended at
+the end of the conversation, so it cannot invalidate anything already cached
+ahead of it.
 
 ## License
 

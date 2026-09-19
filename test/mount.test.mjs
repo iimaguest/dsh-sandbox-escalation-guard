@@ -342,3 +342,43 @@ test('re-assembly preserves the input key order', async () => {
     ['command', 'sandbox_permissions', 'justification'],
   )
 })
+
+/**
+ * The cache contract, stated the way the providers state it.
+ *
+ * OpenAI: changing `tools` alters "names, descriptions, schemas, ordering" and
+ * invalidates the prefix; its cache-routing hash is computed over the initial
+ * tokens "including tool definitions when present". Anthropic: modifying tool
+ * definitions invalidates the entire cache (tools, system, messages). DeepSeek
+ * matches on fully-matching persisted prefix units.
+ *
+ * So the guard may change the surface, but only once per session and only
+ * deterministically — never per request, and never with a dependency on how
+ * many requests came before.
+ */
+test('the surface is identical regardless of request order', async () => {
+  const renders = {}
+  const sequence = [
+    'read-only', 'danger-full-access', 'workspace-write',
+    'danger-full-access', 'read-only', 'workspace-write',
+  ]
+
+  for (const mode of sequence) {
+    const { prompt } = await mount({ mode })
+    const assembly = await prompt.assemble(CONTEXT)
+    const render = JSON.stringify(assembly.tools)
+    if (!(mode in renders)) renders[mode] = render
+    assert.equal(render, renders[mode], `mode ${mode} rendered differently on a later request`)
+  }
+
+  assert.equal(Object.keys(renders).length, 3, 'all three modes should have been exercised')
+})
+
+test('narrowing never renames or reorders the tool list', async () => {
+  const { prompt } = await mount({ mode: 'danger-full-access' })
+  const assembly = await prompt.assemble(CONTEXT)
+
+  // Names and list order are part of the cached prefix on both providers.
+  assert.deepEqual(assembly.tools.map((tool) => tool.name), SHELL_TOOLS.map((tool) => tool.name))
+  assert.equal(assembly.tools.length, SHELL_TOOLS.length)
+})
