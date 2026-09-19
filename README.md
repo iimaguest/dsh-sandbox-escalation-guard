@@ -176,6 +176,32 @@ An unrecognised mode grants nothing rather than everything: `SandboxMode` is a
 validated closed union, so this cannot arise from a healthy host, and offering an
 escalation would be the unsafe guess.
 
+### Staying put, and narrowing, are the same case
+
+There is no separate handling for a model trying to *reduce* its own permissions,
+because the predicate never had a direction. `approveEscalation` accepts a value
+only when it is strictly wider than the one in effect, so **every** non-wider
+value is unusable — the mode already in force, and every mode below it alike.
+Neither is published:
+
+| effective mode | `read-only` requested | `workspace-write` requested | `danger-full-access` requested |
+|---|---|---|---|
+| `read-only` | offered | offered | offered |
+| `workspace-write` | **not offered**, denied | not offered | offered |
+| `danger-full-access` | **not offered**, denied | **not offered**, denied | not offered, denied |
+
+At `workspace-write` the enum is reduced to `["danger-full-access"]`, so
+`read-only` is simply absent from the schema. At `danger-full-access` there is no
+enum at all. A call that carries a reduction anyway — a cached schema, or a model
+ignoring its schema — is denied at `tools/pre-execute` with the same correction
+text, which names the effective mode as already the widest and states that no
+value is grantable, so the repair is to omit both fields.
+
+Narrowing is not something this field could ever express in the first place: a
+session's mode is set by policy, not requested downward. The guard does not
+invent a mechanism for it — it stops the field from being offered as though it
+were one.
+
 ---
 
 ## Install
@@ -256,7 +282,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-31 tests:
+34 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.

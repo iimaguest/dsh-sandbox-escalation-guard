@@ -120,6 +120,43 @@ test('a narrower session keeps the field but drops the unusable reduction', () =
   assert.match(tool.description, /escalate immediately/)
 })
 
+/**
+ * A model in a wider mode cannot narrow itself through this field.
+ *
+ * The predicate has no direction — `approveEscalation` wants strictly wider —
+ * so the mode already in force and every mode beneath it are both unusable, and
+ * both must be absent from the published enum rather than merely discouraged.
+ */
+test('a full-access session offers no way to request a narrower mode', () => {
+  const [tool] = narrowTools([bashTool()], 'danger-full-access')
+  assert.equal(tool.parameters.properties.sandbox_permissions, undefined)
+  assert.equal(isUnusableEscalation('read-only', 'danger-full-access'), true)
+  assert.equal(isUnusableEscalation('workspace-write', 'danger-full-access'), true)
+})
+
+test('a workspace-write session cannot request read-only, which is narrower', () => {
+  const [tool] = narrowTools([bashTool()], 'workspace-write')
+  const offered = tool.parameters.properties.sandbox_permissions.enum
+  assert.equal(offered.includes('read-only'), false, 'a reduction must never be advertised')
+  assert.equal(isUnusableEscalation('read-only', 'workspace-write'), true)
+})
+
+test('every non-wider request is denied, in both directions', () => {
+  const modes = ['read-only', 'workspace-write', 'danger-full-access']
+  for (const effective of modes) {
+    for (const requested of modes) {
+      const wider = widerModesFor(effective).includes(requested)
+      // Grantable and usable must agree exactly, for reductions as much as for
+      // the mode already in force.
+      assert.equal(
+        isUnusableEscalation(requested, effective),
+        !wider,
+        `${requested} from ${effective} should be ${wider ? 'usable' : 'unusable'}`,
+      )
+    }
+  }
+})
+
 test('read-only sessions keep the full advertised vocabulary', () => {
   const original = bashTool()
   const [tool] = narrowTools([original], 'read-only')
