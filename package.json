@@ -40,7 +40,9 @@
   },
   "homepage": "https://github.com/iimaguest/dsh-sandbox-escalation-guard#readme",
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "verify": "node tools/verify-modes.mjs",
+    "screenshots": "node tools/make-screenshots.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

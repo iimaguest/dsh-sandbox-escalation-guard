@@ -168,10 +168,36 @@ GitHub, `dsh plugin --profile web add /path/to/dsh-sandbox-escalation-guard`.
 | `warn` | `true` | Log when the schema is narrowed or a call is corrected. |
 | `resolveMode` | *(unset)* | Overrides effective-mode resolution. Exists so the wiring can be tested without a live `sandboxPolicy`; production omits it and reads the session's own `sandbox/mode` fold. |
 
+## Screenshots
+
+![What the model is handed, before and after](assets/screenshots/01-before-after.png)
+
+![Grantability by session mode](assets/screenshots/02-suppression-matrix.png)
+
+![Where the guard sits](assets/screenshots/03-where-it-sits.png)
+
+![Verified against the harness](assets/screenshots/04-verified.png)
+
+These are diagrams of the harness's own contracts rather than captures of a UI,
+and every value in them is copied from verified output — generating them is
+`npm run screenshots`, and the mode table in the last image is exactly what
+`npm run verify` prints.
+
+## Reproducing the claim
+
+```bash
+npm install
+npm run verify
+```
+
+Mounts the plugin against a real Cordis context and a real `systemPrompt`
+registry and prints the model-facing bash schema for each session mode — the
+plugin's observable claim, reproducible rather than described.
+
 ## Tests
 
 ```bash
-node --test test/*.test.mjs
+npm test
 ```
 
 28 tests:
