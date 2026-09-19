@@ -136,23 +136,41 @@ current access level:
   the harness built it**.
 
 An earlier revision instead kept only the enum values strictly wider than the
-*current* mode. That is gone, for two independent reasons:
+*current* mode. That is gone, for two reasons:
 
 - **It moved the cached prefix.** The tools block is the front of the cache, so
   rewriting it on an access-level change discarded the entire cached
   conversation behind it.
-- **The value it kept was going to be rejected anyway.** Keeping
-  `["danger-full-access"]` for a `workspace-write` session publishes a value that
-  becomes the rejected one the moment the session is switched to
-  `danger-full-access`. Since a field can always safely be *omitted*, and a
-  published-but-rejected value is what actually breaks a model, the safe set is
-  the intersection across every mode a session can reach — which is empty as soon
-  as that range includes `danger-full-access`.
+- **The access level does not move on its own.** The shipped permission presets
+  bundle the two knobs, and switching one writes both:
+
+  | preset | sandbox | approval |
+  |---|---|---|
+  | `read-only` | `read-only` | `ask` |
+  | `workspace-write` | `workspace-write` | `ask` |
+  | `danger-full-access` | `danger-full-access` | `never` |
+
+  So the access level never changes while the policy stays put. The policy is
+  therefore the key that is *constant for the whole life of a preset*, which is
+  exactly the lifetime over which the cached prefix must survive.
 
 Because the deciding fact is the approval policy rather than the mode, the
-published surface is byte-identical on every request and across every
-access-level switch. That is the property that protects the cache, and
-`test/mount.test.mjs` pins it directly.
+published surface is byte-identical on every request and does not move when the
+access level is changed in place. That is the property that protects the cache,
+and `test/mount.test.mjs` and `test/real-services.test.mjs` pin it directly.
+
+There is no coverage lost in any shipped preset, which is worth stating because
+an earlier version of this file implied otherwise:
+
+| preset | what the model is offered | correct? |
+|---|---|---|
+| `read-only` | `["workspace-write", "danger-full-access"]` | yes — both are genuinely grantable |
+| `workspace-write` | `["workspace-write", "danger-full-access"]` | `danger-full-access` is grantable; `workspace-write` is the *downward* direction, and escalation only ever goes wider |
+| `danger-full-access` | *(fields removed)* | yes — nothing is wider, so every value would be rejected. This is the reported failure. |
+
+Escalation is strictly widening, so a model never asks to narrow itself. The
+surface above is consequently the correct one for every preset the harness
+ships.
 
 It still judges grantability by the same strictly-wider ladder
 `@deepseek-ai/dsh-sandbox` exports and `approveEscalation` enforces, so the two
@@ -309,19 +327,19 @@ current mode.** An earlier revision did, and that was wrong twice over:
    No value is grantable from all three, so a surface that never offers a
    rejected value cannot offer any value.
 
-**The consequence, stated without hedging:** in a session whose approval policy
-is `ask`, the guard leaves the tool surface exactly as the harness built it. It
-suppresses nothing there, and a GPT-family model at `danger-full-access` under
-`ask` can still fill the fields and get one rejected call — corrected by the
-pre-execute listener rather than prevented. That residual is the deliberate
-price of never invalidating a prefix. It is also the exact case where the
-harness's own validation is reachable, so the failure is a correction with a
-named repair rather than the opaque loop that motivated this plugin.
+**The one residual, stated plainly.** The remaining gap needs a composition no
+shipped preset produces: an approval policy of `ask` **paired with**
+`danger-full-access`. There the fields survive (the policy says an escalation
+could be approved) while the mode says no value is wider, so a GPT-family model
+can still fill them and collect one rejected call — corrected by the
+`tools/pre-execute` listener rather than prevented. That listener names the
+effective mode and the exact repair, so the failure is a clear correction rather
+than the opaque loop that motivated this plugin.
 
-A deployment that genuinely cannot change a session's access level can opt into
-the tighter surface with `escalationPossible: false`, which suppresses
-uniformly. That is a statement about the deployment, made by the deployment —
-not a guess this plugin makes from a mode it cannot know is stable.
+If you build such a composition and want the tighter surface, set
+`escalationPossible: false` to suppress uniformly. That is a statement about your
+deployment, made by your deployment — not a guess this plugin makes from a mode
+it cannot know is stable.
 
 ## Screenshots
 
