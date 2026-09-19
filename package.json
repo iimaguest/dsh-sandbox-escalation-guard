@@ -1,0 +1,50 @@
+{
+  "name": "dsh-sandbox-escalation-guard",
+  "version": "1.0.0",
+  "description": "Stops the DSH sandbox-escalation fields being advertised to a model when the calling session cannot grant them, fixing the retry loop known models fall into at danger-full-access.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "sandbox",
+    "escalation",
+    "permissions",
+    "cordis"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iimaguest/dsh-sandbox-escalation-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iimaguest/dsh-sandbox-escalation-guard/issues"
+  },
+  "homepage": "https://github.com/iimaguest/dsh-sandbox-escalation-guard#readme",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-sandbox": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.5-rc.2"
+  }
+}

@@ -1,0 +1,9 @@
+# dsh-sandbox-escalation-guard bundle patch — mount into the profile plugin
+# tree. The host half rewrites the sandbox-escalation fields out of each
+# assembled tool schema when the calling session cannot grant them, and
+# corrects any call that still carries them.
+- insert:
+    - id: dsh-sandbox-escalation-guard
+      name: dsh-sandbox-escalation-guard
+      config:
+        warn: true
