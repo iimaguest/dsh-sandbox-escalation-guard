@@ -355,7 +355,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-45 tests:
+48 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.
@@ -364,13 +364,19 @@ npm test
   resolvable, and skipped (not failed) when it is not.
 - **`test/mount.test.mjs`** — the plugin applied to a real Cordis context and a
   real `systemPrompt` registry, asserting what the model would be handed, that a
-  confined session still receives the field it can use, that unmounting restores
-  the original surface exactly (so this is an ordinary plugin row with no
-  residue), and that the pre-execute correction fires only on unusable requests.
-  Three of these mount the plugin **before** the policy service exists and then
-  provide it, which is the real boot order — see the note below. Others mount
-  neighbouring listeners on both sides of the guard, and re-assemble fifty times
-  per mode to prove the output bytes never move.
+  session which *can* escalate keeps the harness's own bytes untouched, that the
+  published surface does **not** move when the access level changes, that
+  unmounting restores the original surface exactly (so this is an ordinary plugin
+  row with no residue), and that the pre-execute correction fires only on
+  unusable requests. Some of these mount the plugin **before** the policy service
+  exists and then provide it, which is the real boot order — see the note below.
+  Others mount neighbouring listeners on both sides of the guard, and
+  re-assemble fifty times per mode to prove the output bytes never move.
+- **`test/real-services.test.mjs`** — the same contract mounted against the
+  harness's **real** `ApprovalService` and `SandboxPolicy`, not the testing seam.
+  This is the file that proves the gate reads the harness's own approval fact:
+  a fake `{ effectivePolicy: () => 'never' }` agrees with any implementation,
+  including a wrong one. Skipped (not failed) when the harness is unresolvable.
 
 ### The waterfall must be chained
 
