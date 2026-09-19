@@ -282,7 +282,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-34 tests:
+38 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.
@@ -295,7 +295,21 @@ npm test
   the original surface exactly (so this is an ordinary plugin row with no
   residue), and that the pre-execute correction fires only on unusable requests.
   Three of these mount the plugin **before** the policy service exists and then
-  provide it, which is the real boot order — see the note below.
+  provide it, which is the real boot order — see the note below. Others mount
+  neighbouring listeners on both sides of the guard, and re-assemble fifty times
+  per mode to prove the output bytes never move.
+
+### The waterfall must be chained
+
+`ctx.waterfall` dispatches through a chained thunk — `(cbs.shift() ?? inner)` —
+so a listener that returns **without calling `next()` ends the chain** for every
+listener registered after it. The first version of this plugin did exactly that,
+which silently suppressed the `system-prompt/assemble` listeners of
+`dsh-session-reference` and `dsh-agent` for the whole process. Their
+contributions never reached a request and nothing reported the loss; it was
+found by probing the dispatcher against two listeners, not by any single-listener
+test. The listener now `await`s `next()` and narrows the result, which is also
+the correct order — the model must receive the *final* assembly.
 
 ### The service-ordering trap
 
@@ -342,6 +356,40 @@ proceed by stripping the arguments would require re-implementing tool
 dispatching, because `exec.arguments` is deep-frozen before any plugin
 observes it. A denial that names the repair is the safe choice; with (1) active
 it should never fire.
+
+**A listener registered after this one can still re-add the fields.** The
+guard narrows the assembly returned by `next()`, which carries the work of every
+listener *upstream* of it in the chain. A plugin that appends tool schemas and
+happens to register after this one would put un-narrowable fields back.
+Middleware order is absolute and cannot be corrected from inside the waterfall.
+This does not arise with the shipped set: `dsh-session-reference` and
+`dsh-agent` both call `next()` and only read `assembly.variables`, adding no
+tools.
+
+## On prompt caching
+
+The guard rewrites request content, which is exactly the shape of change that
+can quietly destroy a provider's KV cache, so the property is worth stating and
+testing rather than assuming.
+
+**The bytes are constant for the length of a session.** The effective mode is a
+session fact, so `narrowTools` produces the same output on every assembly. The
+schema is narrowed once, in effect, and every later turn sends an identical
+tool block — the cached prefix is stable, and the provider cache is unaffected
+in steady state.
+
+**Nothing varying is introduced.** No timestamp, counter, identifier, or
+regeneration enters the output; property insertion order is preserved from the
+input, so a rewrite never reorders keys and changes bytes without changing
+meaning. `test/mount.test.mjs` pins this: 50 consecutive assemblies per mode
+must yield exactly **one** distinct `JSON.stringify` of the tool surface, and
+the input key order must survive.
+
+The one honest exception is a genuine mid-session mode change — if the user
+switches the session's sandbox mode, the schema legitimately changes and the
+prefix after it must be recomputed. That is a real change in what the model is
+permitted to request, so it is correct for the cache to follow it; the guard
+does not, and should not, try to hide it.
 
 ## License
 

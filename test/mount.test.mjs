@@ -237,3 +237,108 @@ test('an absent policy is reported once, not on every request', async () => {
   assert.equal(mine.length, 1, 'a missing service must be reported without flooding the console per request')
   assert.match(mine[0], /sandboxPolicy is unavailable/)
 })
+
+// ---------------------------------------------------------------------------
+// Waterfall chaining.
+//
+// `system-prompt/assemble` is a chained thunk (`cbs.shift() ?? inner`), so a
+// listener that returns WITHOUT calling `next()` ends the chain for every
+// listener registered after it. The first version of this plugin did that, and
+// no single-listener test could see it — these tests mount a downstream
+// listener and assert it still runs.
+// ---------------------------------------------------------------------------
+
+test('a listener registered after the guard still runs', async () => {
+  const ctx = new Context()
+  const prompt = new SystemPrompt(ctx, {})
+  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+
+  let downstreamRan = false
+  // Downstream, standing in for dsh-session-reference / dsh-agent.
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    downstreamRan = true
+    const result = await next()
+    return { ...result, downstreamMarker: true }
+  })
+
+  // The guard must be mounted FIRST so an un-chained return would cut this off.
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => 'danger-full-access' }) })
+
+  const assembly = await prompt.assemble(CONTEXT)
+
+  assert.equal(downstreamRan, true, 'the guard must not truncate the assemble waterfall')
+  assert.equal(assembly.downstreamMarker, true, "a downstream listener's contribution must survive")
+  // And the guard's own work must still happen, on the final assembly.
+  assert.deepEqual(Object.keys(assembly.tools[0].parameters.properties), ['command'])
+})
+
+test('every listener in the chain still contributes, whatever the order', async () => {
+  const ctx = new Context()
+  const prompt = new SystemPrompt(ctx, {})
+  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+
+  const order = []
+  // Registered BEFORE the guard, so a non-chaining guard would cut it off.
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    order.push('before')
+    const result = await next()
+    return { ...result, beforeMarker: true }
+  })
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => 'danger-full-access' }) })
+  // Registered AFTER the guard, so a guard that returned early would cut it off.
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    order.push('after')
+    const result = await next()
+    return { ...result, afterMarker: true }
+  })
+
+  const assembly = await prompt.assemble(CONTEXT)
+
+  assert.deepEqual(order.sort(), ['after', 'before'], 'both neighbours must run')
+  assert.equal(assembly.beforeMarker, true)
+  assert.equal(assembly.afterMarker, true)
+  // And the guard's own work still lands on the final assembly it passes on.
+  assert.deepEqual(Object.keys(assembly.tools[0].parameters.properties), ['command'])
+})
+
+// ---------------------------------------------------------------------------
+// Prefix stability (KV cache).
+//
+// The guard rewrites request content, so it has to be worth checking that the
+// bytes it produces are identical on every request within a session: a rewrite
+// that varied per request — a timestamp, a counter, a reordered key — would
+// move the cached prefix on every single turn and silently cost the provider
+// cache. Constant-for-a-session is the property to hold.
+// ---------------------------------------------------------------------------
+
+test('the assembled surface serializes identically on every request', async () => {
+  for (const mode of ['danger-full-access', 'workspace-write', 'read-only']) {
+    const { prompt } = await mount({ mode })
+
+    const serializations = new Set()
+    for (let i = 0; i < 50; i++) {
+      const assembly = await prompt.assemble(CONTEXT)
+      serializations.add(JSON.stringify(assembly.tools))
+    }
+
+    assert.equal(
+      serializations.size,
+      1,
+      `mode ${mode} produced ${serializations.size} distinct tool serializations — a varying prefix would ` +
+        'invalidate the provider KV cache on every turn',
+    )
+  }
+})
+
+test('re-assembly preserves the input key order', async () => {
+  const { prompt } = await mount({ mode: 'workspace-write' })
+  const assembly = await prompt.assemble(CONTEXT)
+
+  // Both fields survive here, because a real escalation is available, and
+  // `command` must still lead: a set-like rebuild that reordered properties
+  // would change the bytes without changing the meaning.
+  assert.deepEqual(
+    Object.keys(assembly.tools[0].parameters.properties),
+    ['command', 'sandbox_permissions', 'justification'],
+  )
+})
