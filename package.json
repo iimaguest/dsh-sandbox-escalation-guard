@@ -12,7 +12,10 @@
   },
   "files": [
     "lib/**/*.js",
+    "test/**/*.mjs",
+    "tools/**/*.mjs",
     "cordis.patch.yml",
+    "screenshots.json",
     "README.md",
     "LICENSE"
   ],
