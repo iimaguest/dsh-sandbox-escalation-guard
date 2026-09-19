@@ -282,7 +282,7 @@ plugin's observable claim, reproducible rather than described.
 npm test
 ```
 
-40 tests:
+42 tests:
 
 - **`test/guard.test.mjs`** — the suppression matrix, the strictly-wider table
   against `approveEscalation`'s judgement, and prose stripping.
@@ -417,15 +417,45 @@ the original.
 - tool names and list order survive narrowing;
 - property key order survives narrowing.
 
-### The one honest exception
+### Mid-session access changes: why the prefix must change
 
-A genuine mid-session mode change — the user switching the session's sandbox
-mode — legitimately changes the schema, and the prefix from that point must be
-recomputed. That is a real change in what the model may request, so it is correct
-for the cache to follow it. The guard does not, and should not, try to hide it.
-Note also that the pre-execute correction (a denial) is a *message*, appended at
-the end of the conversation, so it cannot invalidate anything already cached
-ahead of it.
+This is the one case where the guard does invalidate cache, and it is worth
+being exact about it rather than calling it an exception.
+
+**A mode can legitimately change mid-conversation.** `setSandboxMode` appends a
+`sandbox/mode` event to the session log, and `sandboxPolicy.resolve()` folds
+that log on **every** call rather than caching it. Nothing in the harness freezes
+permissions at session start.
+
+**The harness already republishes mode-dependent prompt content for this
+reason.** `dsh-sandbox-policy` registers a `sandbox:policy` system-prompt
+context whose text is a *function* of the resolved policy, evaluated at every
+assembly:
+
+```
+text: (context) => renderPolicyContext(this.resolve({ session }))
+```
+
+`renderPolicyContext` returns a different sentence per mode — "Current DSH file
+policy: read-only…" versus "…danger-full-access…". So a mode change already
+rewrites the system-prompt text, and that already invalidates the cached prefix.
+**This is not a cost this plugin introduces.**
+
+**And since `tools` precedes `system` in the prefix hierarchy, the tools block
+is invalidated first anyway.** Because the guard's own change lands in the tools
+block, it does not add a second invalidation point on top of the one the harness
+already pays — it rides the same event. That ordering is why the two cannot be
+avoided independently.
+
+**The trade is deliberate and correct.** A stale schema would offer the model
+fields that no longer work — exactly the failure this plugin exists to prevent.
+The guard follows the permissions, and the cache follows the guard.
+
+**The cost is bounded.** One cache write per mode change per session, not per
+turn. After it, the new schema is the new cached prefix and reads resume
+normally. Both directions verified in `test/mount.test.mjs`: widening removes
+the fields, narrowing restores the one usable value, and the pre-execute
+correction follows the change as well.
 
 ## License
 

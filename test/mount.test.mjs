@@ -382,3 +382,65 @@ test('narrowing never renames or reorders the tool list', async () => {
   assert.deepEqual(assembly.tools.map((tool) => tool.name), SHELL_TOOLS.map((tool) => tool.name))
   assert.equal(assembly.tools.length, SHELL_TOOLS.length)
 })
+
+/**
+ * A mid-session access change must be picked up, not frozen.
+ *
+ * `sandboxPolicy.resolve()` reads the session's folded `sandbox/mode` state on
+ * every call, and setSandboxMode appends to that log, so a mode can change
+ * mid-conversation. The guard must follow it: re-reading per request is what
+ * makes this work, and it is the same reason the policy service itself is read
+ * lazily rather than captured at mount.
+ *
+ * Note the deliberate trade: the published schema changes, which changes the
+ * cached tools prefix. That is correct — the model's available permissions
+ * genuinely changed, and a stale schema would offer it fields that no longer
+ * work.
+ */
+test('a mode change mid-session changes the published surface', async () => {
+  const ctx = new Context()
+  const prompt = new SystemPrompt(ctx, {})
+  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+
+  let mode = 'read-only'
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => mode }) })
+
+  const at = async () => Object.keys((await prompt.assemble(CONTEXT)).tools[0].parameters.properties)
+
+  assert.deepEqual(await at(), ['command', 'sandbox_permissions', 'justification'])
+
+  mode = 'danger-full-access'
+  assert.deepEqual(await at(), ['command'], 'widening mid-session must remove the un-grantable fields')
+
+  mode = 'workspace-write'
+  assert.deepEqual(
+    await at(),
+    ['command', 'sandbox_permissions', 'justification'],
+    'narrowing mid-session must restore the field for the one real escalation left',
+  )
+})
+
+test('the pre-execute guard follows a mid-session mode change too', async () => {
+  const ctx = new Context()
+  const prompt = new SystemPrompt(ctx, {})
+  prompt.tools(() => ({ schemas: SHELL_TOOLS, knownNames: ['bash'] }))
+
+  let mode = 'read-only'
+  await ctx.plugin({ name, inject, apply: (scope) => apply(scope, { warn: false, resolveMode: () => mode }) })
+
+  const escalate = {
+    name: 'bash',
+    agent: AGENT,
+    arguments: { command: 'rm -rf /', sandbox_permissions: 'workspace-write', justification: 'Because.' },
+  }
+  const decide = () => ctx.waterfall('tools/pre-execute', escalate, () => Promise.resolve({ kind: 'allow' }))
+
+  // read-only -> workspace-write is a genuine escalation, so it is delegated.
+  assert.equal((await decide()).kind, 'allow')
+
+  // Now the session is already wider: the same call becomes unusable.
+  mode = 'workspace-write'
+  const decision = await decide()
+  assert.equal(decision.kind, 'deny', 'a call that was fine before the change must now be corrected')
+  assert.match(decision.reason, /already "workspace-write"/)
+})
