@@ -1,6 +1,6 @@
 {
   "name": "dsh-sandbox-escalation-guard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Stops the DSH sandbox-escalation fields being offered to a model when the calling session cannot grant them, fixing the GPT-family retry loop at danger-full-access where every advertised enum value is rejected before the command runs.",
   "type": "module",
   "main": "lib/index.js",
@@ -48,8 +48,8 @@
     "screenshots": "node tools/make-screenshots.mjs"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-sandbox": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "^0.1.5-rc.2"
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-sandbox": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.0-rc.2"
   }
 }

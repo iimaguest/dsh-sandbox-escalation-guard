@@ -256,6 +256,23 @@ grep -A 14 '"bundles"' ~/.dsh/profiles/web/package.json
 **Activation is a profile load, not a file write.** The plugin takes effect when
 the profile is next loaded.
 
+### dsh version compatibility
+
+Verified against dsh **0.2.0-rc.2** (1.0.1) and developed against the 0.1.5-rc.2
+line. The plugin declares no `@deepseek-ai/dsh-*` peer dependencies, so dsh's
+startup compatibility gate never inspects it — it mounts on any line by
+construction, which is also why nothing warns if a runtime change ever broke it.
+Every harness seam it touches was re-checked against the 0.2 runtime: the
+`system-prompt/assemble` and `tools/pre-execute` events, the
+`{ kind: 'deny', reason }` gate contract, `exec.name`/`exec.arguments`, the
+`approval` service's `effectivePolicy(session)`, the `sandboxPolicy` service's
+`resolve({ session }).mode`, and the `sandbox_permissions` field name — all
+unchanged. The plugin imports nothing from any `@deepseek-ai/*` package at
+runtime (only its own `wider-modes.js`), reaching every service through lazy
+`ctx.get()` lookups instead, so the 0.1→0.2 package reshuffle cannot break it at
+module-link time. `npm test` (48/48) and `tools/verify-modes.mjs` run against
+the 0.2.0-rc.2 packages installed as devDependencies.
+
 ### Managing the install
 
 ```bash
